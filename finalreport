@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Triple Pendulum on Moving Trolley - Interactive Simulation</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      background: #f5f5f5;
+    }
+    header {
+      text-align: center;
+      margin: 1rem;
+    }
+    canvas {
+      background: white;
+      border: 1px solid #ccc;
+      max-width: 100%;
+      height: auto;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 1rem;
+      margin: 1rem;
+    }
+    label {
+      font-size: 0.9rem;
+    }
+    input[type=range] {
+      width: 100px;
+    }
+    #plot {
+      width: 95vw;
+      max-width: 1000px;
+      height: 400px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Triple Pendulum on a Moving Trolley</h1>
+    <p>Interactive Simulation with Real-Time Animation and Angles Plot</p>
+  </header>
+  <div class="controls">
+    <button id="startBtn">▶️ Start</button>
+    <button id="pauseBtn">⏸️ Pause</button>
+    <button id="resetBtn">🔄 Reset</button>
+    <label>Force Amplitude: <input type="range" id="forceAmp" min="0" max="10" step="0.1" value="5"> <span id="ampVal">5</span>N</label>
+    <label>Frequency: <input type="range" id="forceFreq" min="0" max="5" step="0.1" value="1.5"> <span id="freqVal">1.5</span> rad/s</label>
+  </div>
+  <canvas id="simCanvas" width="800" height="400"></canvas>
+  <canvas id="plot" width="1000" height="400"></canvas>
+
+  <script>
+    const M_t = 10.0;
+    const m = [1.0, 1.0, 1.0];
+    const l = [0.5, 0.4, 0.3];
+    const g = 9.81;
+    const b = [0.05, 0.05, 0.05];
+
+    let A = 5.0, omega = 1.5;
+
+    function S(j) { return m.slice(j - 1).reduce((a, b) => a + b, 0); }
+
+    function build_M(q) {
+      const th = q.slice(1);
+      const Mmat = Array(4).fill().map(()=>Array(4).fill(0));
+      Mmat[0][0] = M_t + m.reduce((a,b)=>a+b,0);
+      for (let j=1;j<4;j++) {
+        Mmat[0][j] = l[j-1]*Math.cos(th[j-1])*S(j);
+        Mmat[j][0] = Mmat[0][j];
+      }
+      for (let i=1;i<4;i++){
+        for (let j=1;j<4;j++){
+          Mmat[i][j] = l[i-1]*l[j-1]*Math.cos(th[i-1]-th[j-1])*S(Math.max(i,j));
+        }
+      }
+      return Mmat;
+    }
+
+    function partial_Ms(q){
+      const th = q.slice(1);
+      const dM = Array(4).fill().map(()=>Array(4).fill().map(()=>Array(4).fill(0)));
+      for (let k=1;k<4;k++){
+        const lk = l[k-1];
+        const Sk = S(k);
+        dM[k][0][k] = -lk*Math.sin(th[k-1])*Sk;
+        dM[k][k][0] = dM[k][0][k];
+        for (let i=1;i<4;i++){
+          for (let j=1;j<4;j++){
+            const Sij = S(Math.max(i,j));
+            const coeff = l[i-1]*l[j-1]*Sij;
+            const d = coeff*Math.sin(th[i-1]-th[j-1])*((k===j?1:0)-(k===i?1:0));
+            dM[k][i][j]=d;
+          }
+        }
+      }
+      return dM;
+    }
+
+    function coriolis(q,qdot){
+      const dM=partial_Ms(q);
+      const h=Array(4).fill(0);
+      for(let k=0;k<4;k++){
+        for(let i=0;i<4;i++){
+          for(let j=0;j<4;j++){
+            const term=0.5*((dM[i]?.[k]?.[j]||0)+(dM[j]?.[k]?.[i]||0)-(dM[k]?.[i]?.[j]||0));
+            h[k]+=term*qdot[i]*qdot[j];
+          }
+        }
+      }
+      return h;
+    }
+
+    function gravity(q){
+      const th=q.slice(1);
+      const Gv=[0,0,0,0];
+      for(let j=1;j<4;j++) Gv[j]=S(j)*g*l[j-1]*Math.sin(th[j-1]);
+      return Gv;
+    }
+
+    function Qv(t,q,qdot){
+      const Q=[0,0,0,0];
+      Q[0]=A*Math.sin(omega*t);
+      for(let i=1;i<4;i++) Q[i]=-b[i-1]*qdot[i];
+      return Q;
+    }
+
+    function solve(M,b){
+      const n=M.length;
+      const A=M.map(r=>r.slice());
+      const x=b.slice();
+      for(let i=0;i<n;i++){
+        let max=i;
+        for(let k=i+1;k<n;k++) if(Math.abs(A[k][i])>Math.abs(A[max][i])) max=k;
+        [A[i],A[max]]=[A[max],A[i]];
+        [x[i],x[max]]=[x[max],x[i]];
+        const pivot=A[i][i];
+        for(let j=i;j<n;j++) A[i][j]/=pivot;
+        x[i]/=pivot;
+        for(let k=i+1;k<n;k++){
+          const factor=A[k][i];
+          for(let j=i;j<n;j++) A[k][j]-=factor*A[i][j];
+          x[k]-=factor*x[i];
+        }
+      }
+      for(let i=n-1;i>=0;i--){
+        for(let k=i-1;k>=0;k--){
+          const factor=A[k][i];
+          A[k][i]-=factor*A[i][i];
+          x[k]-=factor*x[i];
+        }
+      }
+      return x;
+    }
+
+    function qddot(q,qdot,t){
+      const Mmat=build_M(q);
+      const h=coriolis(q,qdot);
+      const Gv=gravity(q);
+      const Q=Qv(t,q,qdot);
+      const rhs=Q.map((val,i)=>val-h[i]-Gv[i]);
+      return solve(Mmat,rhs);
+    }
+
+    function rk4(y,t,dt){
+      const f=(t,y)=>{
+        const q=y.slice(0,4), qdot=y.slice(4);
+        const qdd=qddot(q,qdot,t);
+        return qdot.concat(qdd);
+      };
+      const k1=f(t,y);
+      const y2=y.map((yi,i)=>yi+0.5*dt*k1[i]);
+      const k2=f(t+dt/2,y2);
+      const y3=y.map((yi,i)=>yi+0.5*dt*k2[i]);
+      const k3=f(t+dt/2,y3);
+      const y4=y.map((yi,i)=>yi+dt*k3[i]);
+      const k4=f(t+dt,y4);
+      return y.map((yi,i)=>yi+dt/6*(k1[i]+2*k2[i]+2*k3[i]+k4[i]));
+    }
+
+    const simCanvas=document.getElementById('simCanvas');
+    const ctx=simCanvas.getContext('2d');
+    const plotCanvas=document.getElementById('plot');
+    const pctx=plotCanvas.getContext('2d');
+
+    let t=0, dt=0.002, running=false;
+    let y=[0,0.05,0,0,0,0,0,0];
+    let trail=[];
+
+    function drawSystem(){
+      ctx.clearRect(0,0,simCanvas.width,simCanvas.height);
+      const originX=simCanvas.width/2 + y[0]*100;
+      const originY=100;
+      const th=[y[1],y[2],y[3]];
+      const xs=[originX];
+      const ys=[originY];
+      for(let i=0;i<3;i++){
+        xs.push(xs[i]+l[i]*100*Math.sin(th[i]));
+        ys.push(ys[i]+l[i]*100*Math.cos(th[i]));
+      }
+      ctx.lineWidth=2;
+      for(let i=0;i<3;i++){
+        ctx.beginPath();
+        ctx.moveTo(xs[i],ys[i]);
+        ctx.lineTo(xs[i+1],ys[i+1]);
+        ctx.stroke();
+      }
+      for(let i=1;i<4;i++){
+        ctx.beginPath();
+        ctx.arc(xs[i],ys[i],8,0,2*Math.PI);
+        ctx.fillStyle=['#e74c3c','#27ae60','#2980b9'][i-1];
+        ctx.fill();
+      }
+      ctx.fillStyle='gray';
+      ctx.fillRect(originX-30,originY-10,60,20);
+    }
+
+    function drawPlot(){
+      pctx.clearRect(0,0,plotCanvas.width,plotCanvas.height);
+      const maxPts=500;
+      trail.push([y[1],y[2],y[3]]);
+      if(trail.length>maxPts) trail.shift();
+      const midY=plotCanvas.height/2;
+      const scaleY=150; // increased amplitude scaling
+      const scaleX=plotCanvas.width/maxPts;
+      // Grid lines
+      pctx.strokeStyle='#ddd';
+      pctx.lineWidth=1;
+      for(let gx=0;gx<plotCanvas.width;gx+=100){
+        pctx.beginPath();pctx.moveTo(gx,0);pctx.lineTo(gx,plotCanvas.height);pctx.stroke();
+      }
+      for(let gy=0;gy<plotCanvas.height;gy+=50){
+        pctx.beginPath();pctx.moveTo(0,gy);pctx.lineTo(plotCanvas.width,gy);pctx.stroke();
+      }
+      // Axes labels
+      pctx.fillStyle='black';
+      pctx.font='16px Arial';
+      pctx.fillText('Time (relative)', plotCanvas.width/2-50, plotCanvas.height-10);
+      pctx.save();
+      pctx.translate(20, plotCanvas.height/2);
+      pctx.rotate(-Math.PI/2);
+      pctx.fillText('Angle [rad]', 0, 0);
+      pctx.restore();
+      const colors=['#e74c3c','#27ae60','#2980b9'];
+      colors.forEach((col,i)=>{
+        pctx.beginPath();
+        pctx.strokeStyle=col;
+        pctx.lineWidth=2;
+        trail.forEach((pt,j)=>{
+          const x=j*scaleX;
+          const yval=midY-pt[i]*scaleY;
+          if(j===0)pctx.moveTo(x,yval);else pctx.lineTo(x,yval);
+        });
+        pctx.stroke();
+        pctx.fillStyle=col;
+        pctx.fillText(`θ${i+1}`, plotCanvas.width-60, 20+20*i);
+      });
+    }
+
+    function step(){
+      if(!running)return;
+      y=rk4(y,t,dt);
+      t+=dt;
+      drawSystem();
+      drawPlot();
+      requestAnimationFrame(step);
+    }
+
+    document.getElementById('startBtn').onclick=()=>{if(!running){running=true;requestAnimationFrame(step);}};
+    document.getElementById('pauseBtn').onclick=()=>{running=false;};
+    document.getElementById('resetBtn').onclick=()=>{running=false;t=0;y=[0,0.05,0,0,0,0,0,0];trail=[];drawSystem();drawPlot();};
+
+    const ampSlider=document.getElementById('forceAmp');
+    const freqSlider=document.getElementById('forceFreq');
+    const ampVal=document.getElementById('ampVal');
+    const freqVal=document.getElementById('freqVal');
+    ampSlider.oninput=()=>{A=parseFloat(ampSlider.value);ampVal.textContent=A.toFixed(1);};
+    freqSlider.oninput=()=>{omega=parseFloat(freqSlider.value);freqVal.textContent=omega.toFixed(1);};
+
+    drawSystem();
+    drawPlot();
+  </script>
+</body>
+</html>
